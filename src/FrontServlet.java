@@ -1,5 +1,6 @@
 package src;
 
+
 import jakarta.servlet.*;
 import jakarta.servlet.http.*;
 import java.io.IOException;
@@ -11,21 +12,25 @@ import java.util.Map;
 import java.util.Set;
 
 public class FrontServlet extends HttpServlet {
+    // Map URL -> Controller class
     private final Map<String, Class<?>> controllerMap = new HashMap<>();
+    // Map URL -> Method
     private final Map<String, Method> methodMap = new HashMap<>();
 
     @Override
     public void init() throws ServletException {
         super.init();
 
+        // Scan classes under /WEB-INF/classes/src/ for @Controller classes
         ServletContext ctx = getServletContext();
-        String base = "/WEB-INF/classes/src/";
+        String base = "/WEB-INF/classes/src/"; // package 'src'
 
         Set<String> resources = ctx.getResourcePaths(base);
         if (resources != null) {
             scanResources(base, ctx);
         }
 
+        // expose mapping to other components if needed
         ctx.setAttribute("routeControllers", controllerMap);
         ctx.setAttribute("routeMethods", methodMap);
     }
@@ -37,13 +42,11 @@ public class FrontServlet extends HttpServlet {
         for (String p : children) {
             if (p.endsWith("/")) {
                 scanResources(p, ctx);
-            } 
-            else if (p.endsWith(".class")) {
+            } else if (p.endsWith(".class")) {
                 try {
                     String prefix = "/WEB-INF/classes/";
                     if (!p.startsWith(prefix)) continue;
-
-                    String classPath = p.substring(prefix.length(), p.length() - 6);
+                    String classPath = p.substring(prefix.length(), p.length() - 6); // remove .class
                     String className = classPath.replace('/', '.');
 
                     Class<?> cls = Class.forName(className);
@@ -59,103 +62,78 @@ public class FrontServlet extends HttpServlet {
                             }
                         }
                     }
+                } catch (ClassNotFoundException e) {
+                    log("Class not found while scanning: " + e.getMessage());
                 } catch (Throwable t) {
-                    log("Erreur lors du scan : " + t.getMessage());
+                    log("Error scanning class " + p + " : " + t);
                 }
             }
         }
     }
 
-    @Override
-    protected void service(HttpServletRequest req, HttpServletResponse resp)
-            throws ServletException, IOException {
+        @Override
+        protected void service(HttpServletRequest req, HttpServletResponse resp)
+                throws ServletException, IOException {
+                
+            resp.setContentType("text/html;charset=UTF-8");
 
-        resp.setContentType("text/html;charset=UTF-8");
+            String uri = req.getRequestURI();
+            String path = uri.replaceFirst(req.getContextPath(), "");
 
-        String uri = req.getRequestURI();
-        String path = uri.replaceFirst(req.getContextPath(), "");
-
-        // ===== 1. Ressource statique =====
-        InputStream res = getServletContext().getResourceAsStream(path);
-        if (res != null) {
-            OutputStream out = resp.getOutputStream();
-            res.transferTo(out);
-            res.close();
-            return;
-        }
-
-        // ===== 2. URL EXACTE =====
-        if (methodMap.containsKey(path)) {
-            Class<?> controllerClass = controllerMap.get(path);
-            Method method = methodMap.get(path);
-
-            try {
-                Object controllerInstance = controllerClass.getDeclaredConstructor().newInstance();
-                Object result;
-
-                if (method.getParameterCount() == 2 &&
-                    method.getParameterTypes()[0] == HttpServletRequest.class &&
-                    method.getParameterTypes()[1] == HttpServletResponse.class) {
-                    result = method.invoke(controllerInstance, req, resp);
-                } else {
-                    result = method.invoke(controllerInstance);
-                }
-
-                if (result != null) {
-                    resp.getWriter().println(result.toString());
-                }
-
-            } catch (Exception e) {
-                resp.getWriter().println("<pre>" + e.getMessage() + "</pre>");
+            // 🔹 1. Vérifier si la ressource statique existe
+            InputStream res = getServletContext().getResourceAsStream(path);
+            if (res != null) {
+                OutputStream out = resp.getOutputStream();
+                res.transferTo(out);
+                res.close();
+                return;
             }
-            return;
-        }
 
-        // ===== 3. URL AVEC PARAMÈTREE /tiko/{valeur} =====
-        for (String mappedUrl : methodMap.keySet()) {
+            // 🔹 2. Vérifier si l’URL correspond à une méthode annotée
+            if (methodMap.containsKey(path)) {
+                Class<?> controllerClass = controllerMap.get(path);
+                Method method = methodMap.get(path);
 
-            if (mappedUrl.contains("{") && mappedUrl.contains("}")) {
+                try {
+                    // 🔹 3. Créer une instance du contrôleur
+                    Object controllerInstance = controllerClass.getDeclaredConstructor().newInstance();
 
-                String base = mappedUrl.substring(0, mappedUrl.indexOf("/{"));
+                    // 🔹 4. Vérifier les paramètres attendus par la méthode
+                    Object result;
+                    if (method.getParameterCount() == 2 &&
+                        method.getParameterTypes()[0] == HttpServletRequest.class &&
+                        method.getParameterTypes()[1] == HttpServletResponse.class) {
+                        
+                        // Si la méthode prend (HttpServletRequest, HttpServletResponse)
+                        result = method.invoke(controllerInstance, req, resp);
 
-                if (path.startsWith(base + "/")) {
-
-                    String valeur = path.substring(base.length() + 1);
-
-                    Class<?> controllerClass = controllerMap.get(mappedUrl);
-                    Method method = methodMap.get(mappedUrl);
-
-                    try {
-                        Object controllerInstance = controllerClass.getDeclaredConstructor().newInstance();
-
-                        req.setAttribute("param", valeur);
-
-                        Object result;
-
-                        if (method.getParameterCount() == 2 &&
-                            method.getParameterTypes()[0] == HttpServletRequest.class &&
-                            method.getParameterTypes()[1] == HttpServletResponse.class) {
-                            result = method.invoke(controllerInstance, req, resp);
-                        } else {
-                            result = method.invoke(controllerInstance);
-                        }
-
-                        if (result != null) {
-                            resp.getWriter().println(result.toString());
-                        }
-
-                    } catch (Exception e) {
-                        resp.getWriter().println("<pre>" + e.getMessage() + "</pre>");
+                    } else {
+                        // Sinon, invoquer sans paramètres
+                        result = method.invoke(controllerInstance);
                     }
-                    return;
+
+                    // 🔹 5. Si la méthode renvoie quelque chose, l’afficher dans la réponse
+                    if (result != null) {
+                        resp.getWriter().println(result.toString());
+                    }
+
+                } catch (Exception e) {
+                    // 🔹 6. Gestion des erreurs
+                    resp.getWriter().println("<html><body>");
+                    resp.getWriter().println("<h3>Erreur lors de l'exécution du contrôleur</h3>");
+                    resp.getWriter().println("<pre>" + e.getMessage() + "</pre>");
+                    resp.getWriter().println("</body></html>");
+                    e.printStackTrace();
                 }
+                return;
             }
+
+            // 🔹 7. Si aucune méthode correspondante → 404
+            resp.getWriter().println("<html><body>");
+            resp.getWriter().println("<p>404 - Route non trouvée</p>");
+            resp.getWriter().println("<p>URL demandée : " + path + "</p>");
+            resp.getWriter().println("</body></html>");
         }
 
-        // ===== 4. 404 =====
-        resp.getWriter().println("<html><body>");
-        resp.getWriter().println("<p>404 - Route non trouvée</p>");
-        resp.getWriter().println("<p>URL demandée : " + path + "</p>");
-        resp.getWriter().println("</body></html>");
-    }
+    
 }
